@@ -30,8 +30,12 @@ npm run build
 
 发布目录为 `dist`。运行时资源均包含在发布目录中，无需外部模型或字体 CDN。
 
-## 更新 Cloudflare Pages
+## 分支和自动发布
 
-在现有 `schoolroom` 项目创建一次新的生产部署，上传构建后的 `dist` 文件夹或以其中内容为根目录的 ZIP。无需新建项目。部署包包含 `index.html`、`assets`、`favicon.svg` 和缓存配置。
+新版保存在 `home-v2` 分支，它也是仓库默认分支和 Cloudflare Pages 的生产分支。`main` 保留原版，供回看和对照。
 
-参考：[Cloudflare Direct Upload 官方说明](https://developers.cloudflare.com/pages/get-started/direct-upload/)。公开地址只有完成上传并部署后才会更新。
+Cloudflare 的 `schoolroom` 项目已连接 GitHub 仓库 `qiangua337/room`。以后将改动提交到 `home-v2`，Cloudflare 会自动构建并更新 [schoolroom.pages.dev](https://schoolroom.pages.dev/)。
+
+构建命令为 `npm run build`，发布目录为 `dist`。其他分支生成预览部署，不会替换正式网站。
+
+参考：[Cloudflare 分支部署设置](https://developers.cloudflare.com/pages/configuration/branch-build-controls/)。
