@@ -1,5 +1,33 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { pointSegment } from './navigation.js';
+
+// Only direct static meshes are batched; animated children keep their own transforms.
+export function batchStaticMeshes(parent) {
+  const batches = new Map();
+  for (const mesh of [...parent.children]) {
+    if (!mesh.isMesh || Array.isArray(mesh.material) || mesh.material.transparent) continue;
+    mesh.updateMatrix();
+    const source = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+    const geometry = source.applyMatrix4(mesh.matrix);
+    const key = mesh.material.uuid;
+    if (!batches.has(key)) batches.set(key, { material: mesh.material, geometries: [], meshes: [] });
+    const batch = batches.get(key);
+    batch.geometries.push(geometry); batch.meshes.push(mesh);
+  }
+  for (const batch of batches.values()) {
+    if (batch.meshes.length < 2) { batch.geometries.forEach(g => g.dispose()); continue; }
+    const geometry = mergeGeometries(batch.geometries, false);
+    if (geometry) {
+      const merged = new THREE.Mesh(geometry, batch.material);
+      merged.castShadow = merged.receiveShadow = true;
+      batch.meshes.forEach(mesh => parent.remove(mesh));
+      parent.add(merged);
+    }
+    batch.geometries.forEach(g => g.dispose());
+  }
+}
 
 /**
  * Photo-inspired loft bed / desk / stair / wardrobe suite.
@@ -13,6 +41,8 @@ export function createLoftSuite({ wood, white, metal, fabric } = {}, side = 1) {
   const group = new THREE.Group();
   group.name = 'photo-loft-bed-suite';
   const colliders = [];
+  const interactions = [], motions = [];
+  function anchor(x, y, z) { const o = new THREE.Object3D(); o.position.set(x,y,z); group.add(o); return o; }
   const mat = (color, roughness = 0.65, metalness = 0) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
   const m = {
     wood: wood || mat('#b99960'), white: white || mat('#eeeee5', 0.48),
@@ -42,6 +72,7 @@ export function createLoftSuite({ wood, white, metal, fabric } = {}, side = 1) {
     obj.position.set(x, y, z); obj.castShadow = true; parent.add(obj); return obj;
   }
   function collider(minX, maxX, minZ, maxZ, kind) { colliders.push({ minX, maxX, minZ, maxZ, kind }); }
+  function blockerRadius(){return .22*Math.abs(group.getWorldScale(new THREE.Vector3()).y)}
   const x0 = .025, x1 = 1.155, rear = -1.50, front = .60;
 
   // Four square steel columns and oak end boards, as in the references.
@@ -62,8 +93,10 @@ export function createLoftSuite({ wood, white, metal, fabric } = {}, side = 1) {
   collider(.025, 1.155, .566, .628, 'bed-end-panel');
   // End caps have the same softly rounded top corners as the photographed bed.
   for (const z of [front, rear]) {
-    box(1.17, .59, .052, .59, 1.995, z, m.white, .068);
-    box(1.077, .506, .054, .59, 1.99, z + (z > 0 ? .008 : -.008), m.wood, .055);
+    const width = z === front ? .60 : 1.17, center = z === front ? .875 : .59;
+    // Leave a real opening aligned with the stairs, instead of climbing through a solid rail.
+    box(width, .59, .052, center, 1.995, z, m.white, .068);
+    box(width-.09, .506, .054, center, 1.99, z + (z > 0 ? .008 : -.008), m.wood, .055);
     box(1.13, .039, .059, .59, 1.724, z, m.white, .006);
   }
   // Long side rails: oak lower infill and light, open white upper railing.
@@ -119,13 +152,49 @@ export function createLoftSuite({ wood, white, metal, fabric } = {}, side = 1) {
   // Laptop faces the aisle, with hinge, keyboard rows, and a muted blue display.
   const laptop = new THREE.Group(); laptop.position.set(.845, .798, -.66); group.add(laptop);
   box(.27, .014, .39, 0, 0, 0, m.dark, .006, laptop);
-  box(.016, .225, .39, .125, .12, 0, m.black, .006, laptop).rotation.z = .14;
-  box(.006, .184, .351, .102, .124, 0, m.screen, .003, laptop).rotation.z = .14;
-  const screenGlow = new THREE.MeshBasicMaterial({ color: '#7394a5' });
-  box(.007, .01, .14, .080, .20, -.07, screenGlow, .001, laptop);
-  box(.007, .007, .22, .088, .156, 0, screenGlow, .001, laptop);
+  const lid = new THREE.Group(); lid.position.set(.125,.008,0); laptop.add(lid);
+  box(.018, .235, .39, 0, .117, 0, m.black, .006, lid);
+  const screenCanvas = document.createElement('canvas'); screenCanvas.width=512; screenCanvas.height=288;
+  const screenContext = screenCanvas.getContext('2d');
+  const sky = screenContext.createLinearGradient(0,0,0,288); sky.addColorStop(0,'#34535e'); sky.addColorStop(1,'#d7b98b');
+  screenContext.fillStyle=sky; screenContext.fillRect(0,0,512,288);
+  screenContext.fillStyle='#f4dec0'; screenContext.beginPath(); screenContext.arc(360,90,35,0,Math.PI*2); screenContext.fill();
+  screenContext.fillStyle='#608281'; screenContext.beginPath(); screenContext.moveTo(0,220); screenContext.bezierCurveTo(150,100,300,260,512,150); screenContext.lineTo(512,288); screenContext.lineTo(0,288); screenContext.fill();
+  screenContext.fillStyle='#f9f0df'; screenContext.font='22px Arial'; screenContext.fillText('HOME, AGAIN',28,44);
+  const screenMap = new THREE.CanvasTexture(screenCanvas); screenMap.colorSpace=THREE.SRGBColorSpace;
+  const display = new THREE.Mesh(new THREE.PlaneGeometry(.351,.194),new THREE.MeshBasicMaterial({map:screenMap}));
+  display.position.set(-.010,.12,0); display.rotation.y=-Math.PI/2; lid.add(display);
+  let laptopOpen=true, lidAmount=0;
+  lid.rotation.z=.12;
+  interactions.push({type:'laptop',name:'电脑',anchor:anchor(.82,.94,-.66),get label(){return laptopOpen?'合上电脑':'打开电脑'},get state(){return laptopOpen},toggle(){laptopOpen=!laptopOpen;return laptopOpen?'电脑打开了':'电脑合上了'}});
+  motions.push(dt=>{lidAmount=THREE.MathUtils.damp(lidAmount,laptopOpen?0:1,7,dt);lid.rotation.z=.12+lidAmount*(Math.PI/2-.12);display.visible=lidAmount<.95;});
   for (let r = 0; r < 4; r++) for (let c = 0; c < 8; c++) box(.024, .003, .031, .027 - r * .037, .009, -.145 + c * .041, m.recess, .002, laptop);
   box(.055, .002, .085, -.088, .01, .01, m.metal, .003, laptop);
+  // A warm task light, with a visible bulb and real local illumination.
+  const lamp = new THREE.Group(); lamp.position.set(.99,.80,-.34); group.add(lamp);
+  const lampMat=mat('#577a7d',.40,.22);
+  const base=new THREE.Mesh(new THREE.CylinderGeometry(.065,.070,.022,24),lampMat);base.position.y=.011;lamp.add(base);
+  rod([0,.02,0],[0,.24,-.03],.009,lampMat,lamp);rod([0,.24,-.03],[-.12,.34,-.03],.009,lampMat,lamp);
+  const shade=new THREE.Mesh(new THREE.CylinderGeometry(.031,.074,.079,24,1,true),lampMat);shade.position.set(-.12,.30,-.03);lamp.add(shade);
+  const bulbMat=new THREE.MeshStandardMaterial({color:'#fff0bc',emissive:'#ffd990',emissiveIntensity:0});
+  const bulb=new THREE.Mesh(new THREE.SphereGeometry(.023,12,8),bulbMat);bulb.position.set(-.12,.28,-.03);lamp.add(bulb);
+  const taskLight=new THREE.PointLight('#ffdb9f',0,3.0,2);taskLight.position.copy(bulb.position);lamp.add(taskLight);
+  let lampOn=false;
+  interactions.push({type:'lamp',name:'台灯',anchor:anchor(.94,1.0,-.34),get label(){return lampOn?'关掉台灯':'打开台灯'},get state(){return lampOn},toggle(){lampOn=!lampOn;taskLight.intensity=lampOn?9:0;bulbMat.emissiveIntensity=lampOn?2.5:0;return lampOn?'台灯亮了':'台灯关了'}});
+  // A shallow desk drawer slides out toward the aisle.
+  const drawer=new THREE.Group();drawer.position.set(.875,.67,-.13);group.add(drawer);
+  box(.54,.085,.34,0,0,0,m.cream,.009,drawer);
+  box(.012,.092,.36,-.277,0,0,m.white,.006,drawer);
+  rod([-.290,-.008,-.065],[-.290,-.008,.065],.005,m.metal,drawer);
+  box(.30,.004,.18,0,.045,0,m.pale,.002,drawer);
+  let drawerOpen=false,drawerAmount=0,drawerBlocked=false;
+  interactions.push({type:'drawer',name:'抽屉',anchor:anchor(.59,.68,-.13),get label(){return drawerOpen?'合上抽屉':'拉开抽屉'},get state(){return drawerOpen},get blocked(){return drawerBlocked},toggle(){drawerOpen=!drawerOpen;return drawerOpen?'抽屉正在拉开':'抽屉正在合上'}});
+  motions.push((dt,blockers=[])=>{
+    const prior=drawerAmount;drawerAmount=THREE.MathUtils.damp(drawerAmount,drawerOpen?1:0,7,dt);drawer.position.x=.875-drawerAmount*.24;drawerBlocked=false;
+    if(drawerOpen&&blockers.length&&Math.abs(drawerAmount-prior)>.00001){drawer.updateWorldMatrix(true,true);const b=new THREE.Box3().setFromObject(drawer),r=blockerRadius();
+      if(blockers.some(p=>p.y<r&&Math.hypot(p.x-THREE.MathUtils.clamp(p.x,b.min.x,b.max.x),p.z-THREE.MathUtils.clamp(p.z,b.min.z,b.max.z))<r)){drawerAmount=prior;drawer.position.x=.875-prior*.24;drawerBlocked=true;}
+    }
+  });
   // A mug with a visible open top and handle.
   const cup = new THREE.Mesh(new THREE.CylinderGeometry(.037, .031, .086, 14, 1, true), m.mug);
   cup.position.set(.73, .833, -.24); cup.castShadow = true; group.add(cup);
@@ -176,25 +245,33 @@ export function createLoftSuite({ wood, white, metal, fabric } = {}, side = 1) {
 
   // Cream wardrobe immediately beside the stairs, with oak edging and twin doors.
   const wardrobePartsStart = group.children.length;
-  box(1.18, 2.27, .62, .59, 1.135, 2.0, m.wood, .01);
+  // A cabinet shell and shelves give the opened doors a real interior.
+  box(.026,2.27,.62,.013,1.135,2.0,m.wood,.006);
+  box(.026,2.27,.62,1.167,1.135,2.0,m.wood,.006);
+  box(1.13,2.22,.026,.59,1.135,1.703,m.wood);
+  for(const y of [.08,.54,1.08,1.62,2.24])box(1.13,.026,.59,.59,y,2.0,m.wood);
+  for(const y of [.20,.66,1.20]){box(.40,.11,.31,.32,y,2.0,m.pale,.02);box(.40,.07,.31,.80,y,2.0,m.fabric,.018);}
   box(.024, 2.19, .584, 1.175, 1.125, 2.0, m.white, .008);
   box(.024, 2.19, .584, .005, 1.125, 2.0, m.white, .008);
   box(1.145, .025, .612, .59, 2.263, 2.0, m.white, .006);
   box(1.12, .057, .60, .59, .04, 2.018, m.white, .006);
+  const cabinetLeaves=[];
   for (const x of [.311, .869]) {
-    box(.546, 1.565, .033, x, .832, 2.318, m.white, .009);
+    const leaf=new THREE.Group(),left=x<.59;
+    leaf.position.set(left?.032:1.148,0,2.318);group.add(leaf);
+    const localX=left?.279:-.279;
+    box(.546, 1.565, .033, localX, .832, 0, m.white, .009,leaf);
+    cabinetLeaves.push({leaf,sign:left?-1:1});
     box(.546, .586, .033, x, 1.932, 2.318, m.white, .009);
     const handleX = x < .59 ? x + .154 : x - .154;
-    box(.025, .228, .01, handleX, 1.015, 2.339, m.recess, .007);
+    box(.025, .228, .01, handleX-leaf.position.x, 1.015, .021, m.recess, .007,leaf);
     box(.025, .183, .01, handleX, 1.928, 2.339, m.recess, .007);
-    box(.01, .196, .007, handleX-.007, 1.015, 2.345, m.metal, .003);
+    box(.01, .196, .007, handleX-.007-leaf.position.x, 1.015, .027, m.metal, .003,leaf);
     box(.01, .155, .007, handleX-.007, 1.928, 2.345, m.metal, .003);
-    box(.044, .052, .008, x - .06, 1.337, 2.34, m.pale, .006);
-    rod([x - .06, 1.344, 2.348], [x - .06, 1.32, 2.36], .004, m.metal);
+    box(.044, .052, .008, x-.06-leaf.position.x, 1.337, .022, m.pale, .006,leaf);
+    rod([x-.06-leaf.position.x,1.344,.030],[x-.06-leaf.position.x,1.32,.042],.004,m.metal,leaf);
+    batchStaticMeshes(leaf);
   }
-  box(.073, .11, .014, .594, 1.167, 2.343, m.pale, .008);
-  torus(.011, .004, .594, 1.186, 2.356, m.metal);
-  collider(.50, 1.19, 1.69, 2.87, 'wardrobe');
   // Luggage on top is a distinctive part of the reference.
   box(1.025, .22, .50, .60, 2.384, 2.0, m.chair, .05);
   box(1.033, .019, .505, .60, 2.36, 2.0, m.black, .008);
@@ -208,11 +285,31 @@ export function createLoftSuite({ wood, white, metal, fabric } = {}, side = 1) {
   wardrobe.position.set(2.865, 0, 1.69);
   wardrobe.rotation.y = -Math.PI / 2;
   group.add(wardrobe);
+  group.updateMatrixWorld(true);
+  const wardrobeBounds=new THREE.Box3().setFromObject(wardrobe);
+  collider(wardrobeBounds.min.x,wardrobeBounds.max.x,wardrobeBounds.min.z,wardrobeBounds.max.z,'wardrobe');
+  const cabinetAnchor=new THREE.Object3D();cabinetAnchor.position.set(.59,1.15,2.35);wardrobe.add(cabinetAnchor);
+  let cabinetOpen=false,cabinetAmount=0,cabinetBlocked=false;
+  interactions.push({type:'cabinet',name:'衣柜',anchor:cabinetAnchor,get label(){return cabinetOpen?'关上衣柜':'打开衣柜'},get state(){return cabinetOpen},get blocked(){return cabinetBlocked},toggle(){cabinetOpen=!cabinetOpen;return cabinetOpen?'衣柜正在打开':'衣柜正在关闭'}});
+  motions.push((dt,blockers=[])=>{
+    const prior=cabinetAmount;cabinetAmount=THREE.MathUtils.damp(cabinetAmount,cabinetOpen?1:0,5,dt);cabinetBlocked=false;
+    for(const {leaf,sign}of cabinetLeaves)leaf.rotation.y=sign*cabinetAmount*1.30;
+    if(blockers.length&&Math.abs(cabinetAmount-prior)>.00001){group.updateMatrixWorld(true);const r=blockerRadius();
+      cabinetBlocked=cabinetLeaves.some(({leaf,sign})=>{const a=leaf.localToWorld(new THREE.Vector3()),b=leaf.localToWorld(new THREE.Vector3(-sign*.546,0,0));return blockers.some(p=>p.y<r&&pointSegment(p.x,p.z,a,b)<r);});
+      if(cabinetBlocked){cabinetAmount=prior;for(const {leaf,sign}of cabinetLeaves)leaf.rotation.y=sign*prior*1.30;}
+    }
+  });
+  batchStaticMeshes(wardrobe);
   // Shoes below the desk add the everyday scale of the photos.
   for (const [x, z, color] of [[.44, -1.18, m.ivory], [.62, -1.18, m.ivory], [.94, -.22, m.navy], [.96, -.01, m.navy]]) {
     box(.12, .052, .27, x, .035, z, m.sole, .04);
     box(.113, .075, .225, x, .085, z + .012, color, .042);
     for (let l = 0; l < 3; l++) rod([x - .027, .126, z - .03 + l * .025], [x + .028, .126, z - .03 + l * .025], .003, m.ivory);
   }
-  return { group, colliders };
+  batchStaticMeshes(laptop);batchStaticMeshes(chair);batchStaticMeshes(drawer);
+  batchStaticMeshes(group);
+  return { group, colliders, interactions,
+    segments(){group.updateMatrixWorld(true);return cabinetLeaves.map(({leaf,sign})=>({a:leaf.localToWorld(new THREE.Vector3()),b:leaf.localToWorld(new THREE.Vector3(-sign*.546,0,0)),kind:'cabinet-leaf'}))},
+    movingColliders(){drawer.updateWorldMatrix(true,true);const b=new THREE.Box3().setFromObject(drawer);return [{minX:b.min.x,maxX:b.max.x,minZ:b.min.z,maxZ:b.max.z,kind:'drawer'}]},
+    update(dt,blockers=[]){motions.forEach(fn=>fn(dt,blockers))} };
 }

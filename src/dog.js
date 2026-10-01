@@ -3,7 +3,7 @@ import * as THREE from 'three';
 /** A small, self-contained corgi rig. +Z is forward; paws rest on y = 0. */
 export function createDog() {
   const group = new THREE.Group();
-  group.name = 'Mochi the corgi';
+  group.name = '豆豆';
   group.scale.setScalar(0.92);
   const material = (color, roughness = 0.85) => new THREE.MeshStandardMaterial({ color, roughness });
   const tan = material('#c58b49');
