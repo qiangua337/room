@@ -39,3 +39,9 @@ Cloudflare 的 `schoolroom` 项目已连接 GitHub 仓库 `qiangua337/room`。�
 构建命令为 `npm run build`，发布目录为 `dist`。其他分支生成预览部署，不会替换正式网站。
 
 参考：[Cloudflare 分支部署设置](https://developers.cloudflare.com/pages/configuration/branch-build-controls/)。
+
+## 开源与隐私
+
+维护者原创代码及原创修改采用 [MIT 许可证](LICENSE)，欢迎使用、修改、分享与贡献。第三方代码和素材保留各自原有许可，详情见 [NOTICE.md](NOTICE.md) 及仓库现有来源说明。
+
+API 密钥、真实聊天记录、用户上传文件和本地凭证不应提交；请使用环境变量或本机配置，并保留忽略规则。
